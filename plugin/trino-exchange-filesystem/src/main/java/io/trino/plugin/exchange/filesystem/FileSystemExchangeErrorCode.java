@@ -11,25 +11,30 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package io.trino.plugin.exchange.filesystem;
 
-package io.trino.sql.planner;
+import io.trino.spi.ErrorCode;
+import io.trino.spi.ErrorCodeSupplier;
+import io.trino.spi.ErrorType;
 
-import io.trino.Session;
-import io.trino.metadata.Metadata;
-import io.trino.sql.planner.plan.TableWriterNode;
+import static io.trino.spi.ErrorType.USER_ERROR;
 
-public class TestingWriterTarget
-        extends TableWriterNode.WriterTarget
+public enum FileSystemExchangeErrorCode
+        implements ErrorCodeSupplier
 {
-    @Override
-    public String toString()
+    MAX_OUTPUT_PARTITION_COUNT_EXCEEDED(0, USER_ERROR),
+    /**/;
+
+    private final ErrorCode errorCode;
+
+    FileSystemExchangeErrorCode(int code, ErrorType type)
     {
-        return "testing handle";
+        errorCode = new ErrorCode(code + 0x0510_0000, name(), type);
     }
 
     @Override
-    public boolean supportsReportingWrittenBytes(Metadata metadata, Session session)
+    public ErrorCode toErrorCode()
     {
-        return false;
+        return errorCode;
     }
 }
