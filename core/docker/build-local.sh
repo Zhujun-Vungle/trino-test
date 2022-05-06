@@ -11,6 +11,7 @@ cd ${SCRIPT_DIR}
 # Move to the root directory to run maven for current version.
 pushd ${SOURCE_DIR}
 TRINO_VERSION=$(./mvnw --quiet help:evaluate -Dexpression=project.version -DforceStdout)
+#TRINO_VERSION="LV-trino-0.1.1"
 popd
 
 WORK_DIR="$(mktemp -d)"
@@ -19,6 +20,7 @@ tar -C ${WORK_DIR} -xzf ${WORK_DIR}/trino-server-${TRINO_VERSION}.tar.gz
 rm ${WORK_DIR}/trino-server-${TRINO_VERSION}.tar.gz
 cp -R bin ${WORK_DIR}/trino-server-${TRINO_VERSION}
 cp -R default ${WORK_DIR}/
+cp jmx_prometheus_javaagent-0.16.1.jar ${WORK_DIR}/
 
 cp ${SOURCE_DIR}/client/trino-cli/target/trino-cli-${TRINO_VERSION}-executable.jar ${WORK_DIR}
 
@@ -33,7 +35,7 @@ rm -r ${WORK_DIR}
 . container-test.sh
 
 test_container ${CONTAINER}-amd64 linux/amd64
-test_container ${CONTAINER}-arm64 linux/arm64
+#test_container ${CONTAINER}-arm64 linux/arm64
 
 docker image inspect -f '🚀 Built {{.RepoTags}} {{.Id}}' ${CONTAINER}-amd64
-docker image inspect -f '🚀 Built {{.RepoTags}} {{.Id}}' ${CONTAINER}-arm64
+#docker image inspect -f '🚀 Built {{.RepoTags}} {{.Id}}' ${CONTAINER}-arm64
