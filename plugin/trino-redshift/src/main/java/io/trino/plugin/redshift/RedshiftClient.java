@@ -13,11 +13,36 @@
  */
 package io.trino.plugin.redshift;
 
+import com.google.common.collect.ImmutableSet;
 import io.trino.plugin.base.aggregation.AggregateFunctionRewriter;
 import io.trino.plugin.base.aggregation.AggregateFunctionRule;
 import io.trino.plugin.base.expression.ConnectorExpressionRewriter;
-import io.trino.plugin.jdbc.*;
-import io.trino.plugin.jdbc.aggregation.*;
+import io.trino.plugin.jdbc.BaseJdbcClient;
+import io.trino.plugin.jdbc.BaseJdbcConfig;
+import io.trino.plugin.jdbc.ColumnMapping;
+import io.trino.plugin.jdbc.ConnectionFactory;
+import io.trino.plugin.jdbc.JdbcColumnHandle;
+import io.trino.plugin.jdbc.JdbcExpression;
+import io.trino.plugin.jdbc.JdbcTableHandle;
+import io.trino.plugin.jdbc.JdbcTypeHandle;
+import io.trino.plugin.jdbc.QueryBuilder;
+import io.trino.plugin.jdbc.WriteMapping;
+import io.trino.plugin.jdbc.aggregation.ImplementAvgDecimal;
+import io.trino.plugin.jdbc.aggregation.ImplementAvgFloatingPoint;
+import io.trino.plugin.jdbc.aggregation.ImplementCorr;
+import io.trino.plugin.jdbc.aggregation.ImplementCount;
+import io.trino.plugin.jdbc.aggregation.ImplementCountAll;
+import io.trino.plugin.jdbc.aggregation.ImplementCountDistinct;
+import io.trino.plugin.jdbc.aggregation.ImplementCovariancePop;
+import io.trino.plugin.jdbc.aggregation.ImplementCovarianceSamp;
+import io.trino.plugin.jdbc.aggregation.ImplementMinMax;
+import io.trino.plugin.jdbc.aggregation.ImplementRegrIntercept;
+import io.trino.plugin.jdbc.aggregation.ImplementRegrSlope;
+import io.trino.plugin.jdbc.aggregation.ImplementStddevPop;
+import io.trino.plugin.jdbc.aggregation.ImplementStddevSamp;
+import io.trino.plugin.jdbc.aggregation.ImplementSum;
+import io.trino.plugin.jdbc.aggregation.ImplementVariancePop;
+import io.trino.plugin.jdbc.aggregation.ImplementVarianceSamp;
 import io.trino.plugin.jdbc.expression.JdbcConnectorExpressionRewriterBuilder;
 import io.trino.plugin.jdbc.expression.RewriteComparison;
 import io.trino.plugin.jdbc.mapping.IdentifierMapping;
@@ -32,8 +57,6 @@ import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Decimals;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
-import org.weakref.jmx.internal.guava.collect.ImmutableSet;
-
 
 import javax.inject.Inject;
 
@@ -47,7 +70,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.BiFunction;
 
-//import static com.google.common.collect.ImmutableSet;
 import static io.trino.plugin.jdbc.StandardColumnMappings.bigintColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.bigintWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.booleanColumnMapping;
@@ -356,15 +378,9 @@ public class RedshiftClient
 
     // Working area
     @Override
-    public Optional<JdbcExpression> implementAggregation(ConnectorSession session, AggregateFunction aggregate, Map<String, ColumnHandle> assignments) {
-        return aggregateFunctionRewriter.rewrite(session, aggregate, assignments);
-    }
-
-    @Override
-    public boolean supportsAggregationPushdown(ConnectorSession session, JdbcTableHandle table, List<AggregateFunction> aggregates, Map<String, ColumnHandle> assignments, List<List<ColumnHandle>> groupingSets)
+    public Optional<JdbcExpression> implementAggregation(ConnectorSession session, AggregateFunction aggregate, Map<String, ColumnHandle> assignments)
     {
-        // Postgres sorts textual types differently compared to Trino so we cannot safely pushdown any aggregations which take a text type as an input or as part of grouping set
-        return preventTextualTypeAggregationPushdown(groupingSets);
+        return aggregateFunctionRewriter.rewrite(session, aggregate, assignments);
     }
 
     @Override
@@ -377,7 +393,4 @@ public class RedshiftClient
     {
         return Optional.of(new JdbcTypeHandle(Types.NUMERIC, Optional.of("decimal"), Optional.of(decimalType.getPrecision()), Optional.of(decimalType.getScale()), Optional.empty(), Optional.empty()));
     }
-
-
-
 }
