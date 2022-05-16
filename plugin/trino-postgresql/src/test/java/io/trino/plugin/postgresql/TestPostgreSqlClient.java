@@ -112,22 +112,22 @@ public class TestPostgreSqlClient
         Optional<ConnectorExpression> filter = Optional.of(new Variable("a_filter", BOOLEAN));
 
         // count(*)
-//        testImplementAggregation(
-//                new AggregateFunction("count", BIGINT, List.of(), List.of(), false, Optional.empty()),
-//                Map.of(),
-//                Optional.of("count(*)"));
-//
-//        // count(bigint)
-//        testImplementAggregation(
-//                new AggregateFunction("count", BIGINT, List.of(bigintVariable), List.of(), false, Optional.empty()),
-//                Map.of(bigintVariable.getName(), BIGINT_COLUMN),
-//                Optional.of("count(\"c_bigint\")"));
-//
-//        // count(double)
-//        testImplementAggregation(
-//                new AggregateFunction("count", BIGINT, List.of(doubleVariable), List.of(), false, Optional.empty()),
-//                Map.of(doubleVariable.getName(), DOUBLE_COLUMN),
-//                Optional.of("count(\"c_double\")"));
+        testImplementAggregation(
+                new AggregateFunction("count", BIGINT, List.of(), List.of(), false, Optional.empty()),
+                Map.of(),
+                Optional.of("count(*)"));
+
+        // count(bigint)
+        testImplementAggregation(
+                new AggregateFunction("count", BIGINT, List.of(bigintVariable), List.of(), false, Optional.empty()),
+                Map.of(bigintVariable.getName(), BIGINT_COLUMN),
+                Optional.of("count(\"c_bigint\")"));
+
+        // count(double)
+        testImplementAggregation(
+                new AggregateFunction("count", BIGINT, List.of(doubleVariable), List.of(), false, Optional.empty()),
+                Map.of(doubleVariable.getName(), DOUBLE_COLUMN),
+                Optional.of("count(\"c_double\")"));
 
         // count(DISTINCT bigint)
         testImplementAggregation(
@@ -136,17 +136,17 @@ public class TestPostgreSqlClient
                 Optional.of("count(DISTINCT \"c_bigint\")"));
 
         // count() FILTER (WHERE ...)
-//
-//        testImplementAggregation(
-//                new AggregateFunction("count", BIGINT, List.of(), List.of(), false, filter),
-//                Map.of(),
-//                Optional.empty());
-//
-//        // count(bigint) FILTER (WHERE ...)
-//        testImplementAggregation(
-//                new AggregateFunction("count", BIGINT, List.of(bigintVariable), List.of(), false, filter),
-//                Map.of(bigintVariable.getName(), BIGINT_COLUMN),
-//                Optional.empty());
+
+        testImplementAggregation(
+                new AggregateFunction("count", BIGINT, List.of(), List.of(), false, filter),
+                Map.of(),
+                Optional.empty());
+
+        // count(bigint) FILTER (WHERE ...)
+        testImplementAggregation(
+                new AggregateFunction("count", BIGINT, List.of(bigintVariable), List.of(), false, filter),
+                Map.of(bigintVariable.getName(), BIGINT_COLUMN),
+                Optional.empty());
     }
 
     @Test
@@ -184,7 +184,6 @@ public class TestPostgreSqlClient
     private static void testImplementAggregation(AggregateFunction aggregateFunction, Map<String, ColumnHandle> assignments, Optional<String> expectedExpression)
     {
         Optional<JdbcExpression> result = JDBC_CLIENT.implementAggregation(SESSION, aggregateFunction, assignments);
-        System.out.print(assignments);
 
         if (expectedExpression.isEmpty()) {
             assertThat(result).isEmpty();

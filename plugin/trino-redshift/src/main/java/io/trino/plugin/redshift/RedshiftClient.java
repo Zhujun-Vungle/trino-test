@@ -14,6 +14,7 @@
 package io.trino.plugin.redshift;
 
 import com.google.common.collect.ImmutableSet;
+import com.google.common.math.LongMath;
 import io.trino.plugin.base.aggregation.AggregateFunctionRewriter;
 import io.trino.plugin.base.aggregation.AggregateFunctionRule;
 import io.trino.plugin.base.expression.ConnectorExpressionRewriter;
@@ -25,19 +26,15 @@ import io.trino.plugin.jdbc.JdbcColumnHandle;
 import io.trino.plugin.jdbc.JdbcExpression;
 import io.trino.plugin.jdbc.JdbcTableHandle;
 import io.trino.plugin.jdbc.JdbcTypeHandle;
+import io.trino.plugin.jdbc.LongWriteFunction;
 import io.trino.plugin.jdbc.QueryBuilder;
 import io.trino.plugin.jdbc.WriteMapping;
 import io.trino.plugin.jdbc.aggregation.ImplementAvgDecimal;
 import io.trino.plugin.jdbc.aggregation.ImplementAvgFloatingPoint;
-import io.trino.plugin.jdbc.aggregation.ImplementCorr;
 import io.trino.plugin.jdbc.aggregation.ImplementCount;
 import io.trino.plugin.jdbc.aggregation.ImplementCountAll;
 import io.trino.plugin.jdbc.aggregation.ImplementCountDistinct;
-import io.trino.plugin.jdbc.aggregation.ImplementCovariancePop;
-import io.trino.plugin.jdbc.aggregation.ImplementCovarianceSamp;
 import io.trino.plugin.jdbc.aggregation.ImplementMinMax;
-import io.trino.plugin.jdbc.aggregation.ImplementRegrIntercept;
-import io.trino.plugin.jdbc.aggregation.ImplementRegrSlope;
 import io.trino.plugin.jdbc.aggregation.ImplementStddevPop;
 import io.trino.plugin.jdbc.aggregation.ImplementStddevSamp;
 import io.trino.plugin.jdbc.aggregation.ImplementSum;
@@ -55,6 +52,7 @@ import io.trino.spi.expression.ConnectorExpression;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Decimals;
+import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
 
@@ -65,18 +63,23 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.BiFunction;
 
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Verify.verify;
+import static io.trino.plugin.jdbc.PredicatePushdownController.FULL_PUSHDOWN;
 import static io.trino.plugin.jdbc.StandardColumnMappings.bigintColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.bigintWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.booleanColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.booleanWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.charWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.dateColumnMappingUsingSqlDate;
-import static io.trino.plugin.jdbc.StandardColumnMappings.dateWriteFunctionUsingSqlDate;
+import static io.trino.plugin.jdbc.StandardColumnMappings.dateColumnMappingUsingLocalDate;
+import static io.trino.plugin.jdbc.StandardColumnMappings.dateWriteFunctionUsingLocalDate;
 import static io.trino.plugin.jdbc.StandardColumnMappings.decimalColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.defaultCharColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.defaultVarcharColumnMapping;
@@ -90,8 +93,8 @@ import static io.trino.plugin.jdbc.StandardColumnMappings.realWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.shortDecimalWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.smallintColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.smallintWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.timeColumnMappingUsingSqlTime;
-import static io.trino.plugin.jdbc.StandardColumnMappings.timestampColumnMappingUsingSqlTimestampWithRounding;
+import static io.trino.plugin.jdbc.StandardColumnMappings.timestampReadFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.timestampWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.varbinaryColumnMapping;
@@ -108,7 +111,12 @@ import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
-import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
+import static io.trino.spi.type.TimeType.createTimeType;
+import static io.trino.spi.type.TimestampType.createTimestampType;
+import static io.trino.spi.type.Timestamps.NANOSECONDS_PER_DAY;
+import static io.trino.spi.type.Timestamps.PICOSECONDS_PER_DAY;
+import static io.trino.spi.type.Timestamps.PICOSECONDS_PER_NANOSECOND;
+import static io.trino.spi.type.Timestamps.round;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
 import static java.lang.Math.max;
@@ -119,6 +127,8 @@ public class RedshiftClient
 {
     private final ConnectorExpressionRewriter<String> connectorExpressionRewriter;
     private final AggregateFunctionRewriter<JdbcExpression, String> aggregateFunctionRewriter;
+
+    private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSS");
 
     @Inject
     public RedshiftClient(BaseJdbcConfig config, ConnectionFactory connectionFactory, QueryBuilder queryBuilder, IdentifierMapping identifierMapping)
@@ -155,16 +165,10 @@ public class RedshiftClient
                         .add(new ImplementSum(RedshiftClient::toTypeHandle))
                         .add(new ImplementAvgFloatingPoint())
                         .add(new ImplementAvgDecimal())
-//                        .add(new ImplementAvgBigint())
                         .add(new ImplementStddevSamp())
                         .add(new ImplementStddevPop())
                         .add(new ImplementVarianceSamp())
                         .add(new ImplementVariancePop())
-                        .add(new ImplementCovarianceSamp())
-                        .add(new ImplementCovariancePop())
-                        .add(new ImplementCorr())
-                        .add(new ImplementRegrIntercept())
-                        .add(new ImplementRegrSlope())
                         .build());
     }
 
@@ -254,6 +258,55 @@ public class RedshiftClient
         execute(session, sql);
     }
 
+    private static ColumnMapping timeColumnMapping(int precision)
+    {
+        verify(precision <= 6, "Unsupported precision: %s", precision); // redshift limit but also assumption within this method
+        return ColumnMapping.longMapping(
+                createTimeType(precision),
+                (resultSet, columnIndex) -> {
+                    LocalTime time = resultSet.getObject(columnIndex, LocalTime.class);
+                    long nanosOfDay = time.toNanoOfDay();
+                    if (nanosOfDay == NANOSECONDS_PER_DAY - 1) {
+                        // PostgreSQL's 24:00:00 is returned as 23:59:59.999999999, regardless of column precision
+                        // Is it same for redshift?
+                        nanosOfDay = NANOSECONDS_PER_DAY - LongMath.pow(10, 9 - precision);
+                    }
+
+                    long picosOfDay = nanosOfDay * PICOSECONDS_PER_NANOSECOND;
+                    return round(picosOfDay, 12 - precision);
+                },
+                timeWriteFunction(precision),
+                // jun.zhu@vungle.com: Change the behavior to use FULL_PUSHDOWN anyway
+                FULL_PUSHDOWN);
+    }
+
+    private static LongWriteFunction timeWriteFunction(int precision)
+    {
+        checkArgument(precision <= 6, "Unsupported precision: %s", precision); // Redshift limit but also assumption within this method
+        String bindExpression = format("CAST(? AS time(%s))", precision);
+        return new LongWriteFunction()
+        {
+            @Override
+            public String getBindExpression()
+            {
+                return bindExpression;
+            }
+
+            @Override
+            public void set(PreparedStatement statement, int index, long picosOfDay)
+                    throws SQLException
+            {
+                picosOfDay = round(picosOfDay, 12 - precision);
+                if (picosOfDay == PICOSECONDS_PER_DAY) {
+                    picosOfDay = 0;
+                }
+                LocalTime localTime = LocalTime.ofNanoOfDay(picosOfDay / PICOSECONDS_PER_NANOSECOND);
+                // statement.setObject(.., localTime) would yield incorrect end result for 23:59:59.999000
+                statement.setString(index, TIME_FORMATTER.format(localTime));
+            }
+        };
+    }
+
     private static Optional<ColumnMapping> legacyDefaultColumnMapping(JdbcTypeHandle typeHandle)
     {
         // TODO (https://github.com/trinodb/trino/issues/497) Implement proper type mapping and add test
@@ -293,13 +346,17 @@ public class RedshiftClient
 
             case Types.CHAR:
             case Types.NCHAR:
-                return Optional.of(defaultCharColumnMapping(typeHandle.getRequiredColumnSize(), false));
+                // jun.zhu@vungle.com: Set remote case sensitive to true
+                // Vungle won't use insensitive column and always need the FULL_PUSHDOWN
+                return Optional.of(defaultCharColumnMapping(typeHandle.getRequiredColumnSize(), true));
 
             case Types.VARCHAR:
             case Types.NVARCHAR:
             case Types.LONGVARCHAR:
             case Types.LONGNVARCHAR:
-                return Optional.of(defaultVarcharColumnMapping(typeHandle.getRequiredColumnSize(), false));
+                // jun.zhu@vungle.com: Set remote case sensitive to true
+                // Vungle won't use insensitive column and always need the FULL_PUSHDOWN
+                return Optional.of(defaultVarcharColumnMapping(typeHandle.getRequiredColumnSize(), true));
 
             case Types.BINARY:
             case Types.VARBINARY:
@@ -307,15 +364,18 @@ public class RedshiftClient
                 return Optional.of(varbinaryColumnMapping());
 
             case Types.DATE:
-                return Optional.of(dateColumnMappingUsingSqlDate());
+                return Optional.of(dateColumnMappingUsingLocalDate());
 
             case Types.TIME:
-                // TODO default to `timeColumnMapping`
-                return Optional.of(timeColumnMappingUsingSqlTime());
-
+                // jun.zhu@vungle.com: Copy from postgresql connector
+                return Optional.of(timeColumnMapping(typeHandle.getRequiredDecimalDigits()));
             case Types.TIMESTAMP:
-                // TODO default to `timestampColumnMapping`
-                return Optional.of(timestampColumnMappingUsingSqlTimestampWithRounding(TIMESTAMP_MILLIS));
+                // jun.zhu@vungle.com: Copy from postgresql connector
+                TimestampType timestampType = createTimestampType(typeHandle.getRequiredDecimalDigits());
+                return Optional.of(ColumnMapping.longMapping(
+                        timestampType,
+                        timestampReadFunction(timestampType),
+                        timestampWriteFunction(timestampType)));
         }
         return Optional.empty();
     }
@@ -371,12 +431,11 @@ public class RedshiftClient
             return WriteMapping.sliceMapping("varbinary", varbinaryWriteFunction());
         }
         if (type == DATE) {
-            return WriteMapping.longMapping("date", dateWriteFunctionUsingSqlDate());
+            return WriteMapping.longMapping("date", dateWriteFunctionUsingLocalDate());
         }
         throw new TrinoException(NOT_SUPPORTED, "Unsupported column type: " + type.getDisplayName());
     }
 
-    // Working area
     @Override
     public Optional<JdbcExpression> implementAggregation(ConnectorSession session, AggregateFunction aggregate, Map<String, ColumnHandle> assignments)
     {
