@@ -123,6 +123,8 @@ public class MongoSession
     private final MongoClient client;
 
     private final String schemaCollection;
+    private final Optional<String> schemaDatabase;
+    private final boolean enableCreateIndex;
     private final boolean caseInsensitiveNameMatching;
     private final int cursorBatchSize;
 
@@ -137,6 +139,8 @@ public class MongoSession
         this.caseInsensitiveNameMatching = config.isCaseInsensitiveNameMatching();
         this.cursorBatchSize = config.getCursorBatchSize();
         this.implicitPrefix = requireNonNull(config.getImplicitRowFieldPrefix(), "config.getImplicitRowFieldPrefix() is null");
+        this.schemaDatabase = requireNonNull(config.getSchemaDatabase(), "config.getSchemaDatabase() is null");
+        this.enableCreateIndex = config.isEnableCreateIndex();
 
         this.tableCache = EvictableCacheBuilder.newBuilder()
                 .expireAfterWrite(1, MINUTES)  // TODO: Configure
@@ -158,6 +162,7 @@ public class MongoSession
     public List<String> getAllSchemas()
     {
         return ImmutableList.copyOf(client.listDatabaseNames()).stream()
+                .filter(name -> schemaDatabase.map(schema -> !name.equals(schema)).orElse(true))
                 .map(name -> name.toLowerCase(ENGLISH))
                 .collect(toImmutableList());
     }
@@ -295,8 +300,9 @@ public class MongoSession
 
         metadata.append(FIELDS_KEY, columns);
 
-        MongoDatabase db = client.getDatabase(schemaName);
-        MongoCollection<Document> schema = db.getCollection(schemaCollection);
+//        MongoDatabase db = client.getDatabase(schemaName);
+//        MongoCollection<Document> schema = db.getCollection(schemaCollection);
+        MongoCollection<Document> schema = getSchemaCollection(schemaName);
         schema.findOneAndReplace(new Document(TABLE_NAME_KEY, tableName), metadata);
 
         tableCache.invalidate(schemaTableName);
@@ -315,8 +321,9 @@ public class MongoSession
 
         metadata.append(FIELDS_KEY, columns);
 
-        MongoDatabase database = client.getDatabase(remoteSchemaName);
-        MongoCollection<Document> schema = database.getCollection(schemaCollection);
+//        MongoDatabase database = client.getDatabase(remoteSchemaName);
+//        MongoCollection<Document> schema = database.getCollection(schemaCollection);
+        MongoCollection<Document> schema = getSchemaCollection(remoteSchemaName);
         schema.findOneAndReplace(new Document(TABLE_NAME_KEY, remoteTableName), metadata);
 
         tableCache.invalidate(schemaTableName);
@@ -548,7 +555,8 @@ public class MongoSession
             throws TableNotFoundException
     {
         MongoDatabase db = client.getDatabase(schemaName);
-        MongoCollection<Document> schema = db.getCollection(schemaCollection);
+//        MongoCollection<Document> schema = getAllSchemas(schemaCollection);
+        MongoCollection<Document> schema = getSchemaCollection(schemaName);
 
         Document doc = schema
                 .find(new Document(TABLE_NAME_KEY, tableName)).first();
@@ -592,8 +600,10 @@ public class MongoSession
     private Set<String> getTableMetadataNames(String schemaName)
             throws TableNotFoundException
     {
-        MongoDatabase db = client.getDatabase(schemaName);
-        MongoCursor<Document> cursor = db.getCollection(schemaCollection)
+//        MongoDatabase db = client.getDatabase(schemaName);
+//        MongoCursor<Document> cursor = db.getCollection(schemaCollection)
+//                .find().projection(new Document(TABLE_NAME_KEY, true)).iterator();
+        MongoCursor<Document> cursor = getSchemaCollection(schemaName)
                 .find().projection(new Document(TABLE_NAME_KEY, true)).iterator();
 
         HashSet<String> names = new HashSet<>();
@@ -609,7 +619,7 @@ public class MongoSession
         String schemaName = schemaTableName.getSchemaName();
         String tableName = schemaTableName.getTableName();
 
-        MongoDatabase db = client.getDatabase(schemaName);
+//        MongoDatabase db = client.getDatabase(schemaName);
         Document metadata = new Document(TABLE_NAME_KEY, tableName);
 
         ArrayList<Document> fields = new ArrayList<>();
@@ -624,8 +634,8 @@ public class MongoSession
         metadata.append(FIELDS_KEY, fields);
         tableComment.ifPresent(comment -> metadata.append(COMMENT_KEY, comment));
 
-        MongoCollection<Document> schema = db.getCollection(schemaCollection);
-        if (!indexExists(schema)) {
+        MongoCollection<Document> schema = getSchemaCollection(schemaName);
+        if (enableCreateIndex && !indexExists(schema)) {
             schema.createIndex(new Document(TABLE_NAME_KEY, 1), new IndexOptions().unique(true));
         }
 
@@ -639,11 +649,11 @@ public class MongoSession
 
         MongoDatabase db = client.getDatabase(schemaName);
         if (!collectionExists(db, tableName) &&
-                db.getCollection(schemaCollection).find(new Document(TABLE_NAME_KEY, tableName)).first().isEmpty()) {
+                getSchemaCollection(schemaName).find(new Document(TABLE_NAME_KEY, tableName)).first().isEmpty()) {
             return false;
         }
 
-        DeleteResult result = db.getCollection(schemaCollection)
+        DeleteResult result = getSchemaCollection(schemaName)
                 .deleteOne(new Document(TABLE_NAME_KEY, tableName));
 
         return result.getDeletedCount() == 1;
@@ -803,5 +813,14 @@ public class MongoSession
         }
         String type = firstBatch.get(0).getString("type");
         return "view".equals(type);
+    }
+
+    private MongoCollection<Document> getSchemaCollection(String schemaName)
+    {
+        if (schemaDatabase.isEmpty()) {
+            return client.getDatabase(schemaName).getCollection(schemaCollection);
+        }
+
+        return client.getDatabase(schemaDatabase.get()).getCollection(schemaName);
     }
 }

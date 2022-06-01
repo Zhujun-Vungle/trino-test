@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableList;
 import com.mongodb.MongoCredential;
 import com.mongodb.ServerAddress;
 import io.airlift.configuration.Config;
+import io.airlift.configuration.ConfigDescription;
 import io.airlift.configuration.ConfigSecuritySensitive;
 import io.airlift.configuration.DefunctConfig;
 
@@ -40,6 +41,8 @@ public class MongoClientConfig
     private static final Splitter PORT_SPLITTER = Splitter.on(':').trimResults().omitEmptyStrings();
 
     private String schemaCollection = "_schema";
+    private Optional<String> schemaDatabase = Optional.empty();
+    private boolean enableCreateIndex = true;
     private boolean caseInsensitiveNameMatching;
     private Optional<String> connectionUrl = Optional.empty();
     private List<ServerAddress> seeds = ImmutableList.of();
@@ -60,6 +63,38 @@ public class MongoClientConfig
     private WriteConcernType writeConcern = WriteConcernType.ACKNOWLEDGED;
     private String requiredReplicaSetName;
     private String implicitRowFieldPrefix = "_pos";
+
+    @AssertTrue(message = "Exactly one of 'mongodb.schema-database' or 'mongodb.schema-collection' must be specified, or the default _schema could be created in the same database")
+    public boolean isSchemaManagementConfigValid()
+    {
+        return schemaDatabase.isEmpty() || schemaCollection.equals("_schema");
+    }
+
+    public boolean isEnableCreateIndex()
+    {
+        return enableCreateIndex;
+    }
+
+    @Config("mongodb.create-index-for-schema.enabled")
+    public MongoClientConfig setEnableCreateIndex(boolean enableCreateIndex)
+    {
+        this.enableCreateIndex = enableCreateIndex;
+        return this;
+    }
+
+    @NotNull
+    public Optional<String> getSchemaDatabase()
+    {
+        return schemaDatabase;
+    }
+
+    @ConfigDescription("Database name for managing schemas of collections in the different databases")
+    @Config("mongodb.schema-database")
+    public MongoClientConfig setSchemaDatabase(String schemaDatabase)
+    {
+        this.schemaDatabase = Optional.ofNullable(schemaDatabase);
+        return this;
+    }
 
     @AssertTrue(message = "Exactly one of these 'mongodb.seed' or 'mongodb.connection-url' must be specified")
     public boolean isConnectionPropertyValid()
