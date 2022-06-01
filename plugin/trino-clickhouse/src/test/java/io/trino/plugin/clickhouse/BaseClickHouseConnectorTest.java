@@ -120,6 +120,13 @@ public abstract class BaseClickHouseConnectorTest
     }
 
     @Override
+    public void testAddColumnConcurrently()
+    {
+        // TODO: Default storage engine doesn't support adding new columns
+        throw new SkipException("TODO: test not implemented yet");
+    }
+
+    @Override
     public void testAddColumn()
     {
         String tableName = "test_add_column_" + randomTableSuffix();
@@ -222,15 +229,6 @@ public abstract class BaseClickHouseConnectorTest
                         "col_default Nullable(Int64) DEFAULT 43," +
                         "col_nonnull_default Int64 DEFAULT 42," +
                         "col_required2 Int64) ENGINE=Log");
-    }
-
-    @Test
-    public void testCreateTableWithColumnComment()
-    {
-        // TODO (https://github.com/trinodb/trino/issues/11162) Merge into BaseConnectorTest
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_column_comment", "(col integer COMMENT 'column comment')")) {
-            assertEquals(getColumnComment(table.getName(), "col"), "column comment");
-        }
     }
 
     @Override

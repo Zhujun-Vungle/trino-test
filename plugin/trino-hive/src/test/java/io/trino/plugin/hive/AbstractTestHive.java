@@ -50,6 +50,7 @@ import io.trino.plugin.hive.metastore.SemiTransactionalHiveMetastore;
 import io.trino.plugin.hive.metastore.SortingColumn;
 import io.trino.plugin.hive.metastore.StorageFormat;
 import io.trino.plugin.hive.metastore.Table;
+import io.trino.plugin.hive.metastore.cache.CachingHiveMetastoreConfig;
 import io.trino.plugin.hive.metastore.thrift.BridgingHiveMetastore;
 import io.trino.plugin.hive.metastore.thrift.MetastoreLocator;
 import io.trino.plugin.hive.metastore.thrift.TestingMetastoreLocator;
@@ -790,8 +791,8 @@ public abstract class AbstractTestHive
         HiveMetastore metastore = cachingHiveMetastore(
                 new BridgingHiveMetastore(new ThriftHiveMetastore(
                         metastoreLocator,
-                        hiveConfig,
                         new MetastoreConfig(),
+                        new HiveConfig().isTranslateHiveViews(),
                         new ThriftMetastoreConfig(),
                         hdfsEnvironment,
                         false),
@@ -799,7 +800,8 @@ public abstract class AbstractTestHive
                 executor,
                 new Duration(1, MINUTES),
                 Optional.of(new Duration(15, SECONDS)),
-                10000);
+                10000,
+                new CachingHiveMetastoreConfig().isPartitionCacheEnabled());
 
         setup(databaseName, hiveConfig, metastore, hdfsEnvironment);
     }

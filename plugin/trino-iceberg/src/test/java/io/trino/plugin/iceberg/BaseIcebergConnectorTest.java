@@ -170,6 +170,13 @@ public abstract class BaseIcebergConnectorTest
         assertThat(e).hasMessageContaining("Failed to commit Iceberg update to table");
     }
 
+    @Override
+    protected void verifyConcurrentAddColumnFailurePermissible(Exception e)
+    {
+        assertThat(e)
+                .hasMessageContaining("Cannot update Iceberg table: supplied previous location does not match current location");
+    }
+
     @Test
     public void testDeleteOnV1Table()
     {
@@ -3031,12 +3038,12 @@ public abstract class BaseIcebergConnectorTest
         assertUpdate("DROP TABLE IF EXISTS test_projection_pushdown_comments");
     }
 
-    @Test
-    public void testOptimize()
+    @Test(dataProvider = "tableFormatVersion")
+    public void testOptimize(int formatVersion)
             throws Exception
     {
         String tableName = "test_optimize_" + randomTableSuffix();
-        assertUpdate("CREATE TABLE " + tableName + " (key integer, value varchar) WITH (format_version = 1)");
+        assertUpdate("CREATE TABLE " + tableName + " (key integer, value varchar) WITH (format_version = " + formatVersion + ")");
 
         // DistributedQueryRunner sets node-scheduler.include-coordinator by default, so include coordinator
         int workerCount = getQueryRunner().getNodeCount();
@@ -3085,8 +3092,8 @@ public abstract class BaseIcebergConnectorTest
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @Test
-    public void testOptimizeForPartitionedTable()
+    @Test(dataProvider = "tableFormatVersion")
+    public void testOptimizeForPartitionedTable(int formatVersion)
             throws IOException
     {
         // This test will have its own session to make sure partitioning is indeed forced and is not a result
@@ -3098,7 +3105,7 @@ public abstract class BaseIcebergConnectorTest
                 .setSystemProperty("preferred_write_partitioning_min_number_of_partitions", "100")
                 .build();
         String tableName = "test_repartitiong_during_optimize_" + randomTableSuffix();
-        assertUpdate(session, "CREATE TABLE " + tableName + " (key varchar, value integer) WITH (format_version = 1, partitioning = ARRAY['key'])");
+        assertUpdate(session, "CREATE TABLE " + tableName + " (key varchar, value integer) WITH (format_version = " + formatVersion + ", partitioning = ARRAY['key'])");
         // optimize an empty table
         assertQuerySucceeds(session, "ALTER TABLE " + tableName + " EXECUTE OPTIMIZE");
 
@@ -3125,6 +3132,41 @@ public abstract class BaseIcebergConnectorTest
         // as we force repartitioning there should be only 3 partitions
         assertThat(updatedFiles).hasSize(3);
         assertThat(getAllDataFilesFromTableDirectory(tableName)).containsExactlyInAnyOrderElementsOf(concat(initialFiles, updatedFiles));
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @DataProvider
+    public Object[][] tableFormatVersion()
+    {
+        return IntStream.rangeClosed(IcebergConfig.FORMAT_VERSION_SUPPORT_MIN, IcebergConfig.FORMAT_VERSION_SUPPORT_MAX).boxed()
+                .collect(DataProviders.toDataProvider());
+    }
+
+    @Test
+    public void testOptimizeTableAfterDeleteWithFormatVersion2()
+    {
+        String tableName = "test_optimize_" + randomTableSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " AS SELECT * FROM nation", 25);
+
+        List<String> initialFiles = getActiveFiles(tableName);
+
+        assertUpdate("DELETE FROM " + tableName + " WHERE nationkey = 7", 1);
+
+        // Verify that delete files exists
+        assertQuery(
+                "SELECT summary['total-delete-files'] FROM \"" + tableName + "$snapshots\" WHERE snapshot_id = " + getCurrentSnapshotId(tableName),
+                "VALUES '1'");
+
+        computeActual("ALTER TABLE " + tableName + " EXECUTE OPTIMIZE");
+
+        List<String> updatedFiles = getActiveFiles(tableName);
+        assertThat(updatedFiles)
+                .hasSize(1)
+                .isNotEqualTo(initialFiles);
+
+        assertThat(query("SELECT * FROM " + tableName))
+                .matches("SELECT * FROM nation WHERE nationkey != 7");
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -3314,7 +3356,7 @@ public abstract class BaseIcebergConnectorTest
     }
 
     @Test
-    public void testDeleteOrphanFiles()
+    public void testRemoveOrphanFiles()
             throws Exception
     {
         String tableName = "test_deleting_orphan_files_unnecessary_files" + randomTableSuffix();
@@ -3324,7 +3366,7 @@ public abstract class BaseIcebergConnectorTest
         Path orphanFile = Files.createFile(Path.of(getIcebergTableDataPath(tableName).toString(), "invalidData." + format));
         List<String> initialDataFiles = getAllDataFilesFromTableDirectory(tableName);
 
-        assertQuerySucceeds(sessionWithShortRetentionUnlocked, "ALTER TABLE " + tableName + " EXECUTE DELETE_ORPHAN_FILES (retention_threshold => '0s')");
+        assertQuerySucceeds(sessionWithShortRetentionUnlocked, "ALTER TABLE " + tableName + " EXECUTE REMOVE_ORPHAN_FILES (retention_threshold => '0s')");
 
         List<String> updatedDataFiles = getAllDataFilesFromTableDirectory(tableName);
         assertThat(updatedDataFiles.size()).isLessThan(initialDataFiles.size());
@@ -3332,7 +3374,7 @@ public abstract class BaseIcebergConnectorTest
     }
 
     @Test
-    public void testIfDeleteOrphanFilesCleansUnnecessaryDataFilesInPartitionedTable()
+    public void testIfRemoveOrphanFilesCleansUnnecessaryDataFilesInPartitionedTable()
             throws Exception
     {
         String tableName = "test_deleting_orphan_files_unnecessary_files" + randomTableSuffix();
@@ -3343,7 +3385,7 @@ public abstract class BaseIcebergConnectorTest
         Path orphanFile = Files.createFile(Path.of(getIcebergTableDataPath(tableName) + "/key=one/", "invalidData." + format));
         List<String> initialDataFiles = getAllDataFilesFromTableDirectory(tableName);
 
-        assertQuerySucceeds(sessionWithShortRetentionUnlocked, "ALTER TABLE " + tableName + " EXECUTE DELETE_ORPHAN_FILES (retention_threshold => '0s')");
+        assertQuerySucceeds(sessionWithShortRetentionUnlocked, "ALTER TABLE " + tableName + " EXECUTE REMOVE_ORPHAN_FILES (retention_threshold => '0s')");
 
         List<String> updatedDataFiles = getAllDataFilesFromTableDirectory(tableName);
         assertThat(updatedDataFiles.size()).isLessThan(initialDataFiles.size());
@@ -3351,7 +3393,7 @@ public abstract class BaseIcebergConnectorTest
     }
 
     @Test
-    public void testIfDeleteOrphanFilesCleansUnnecessaryMetadataFilesInPartitionedTable()
+    public void testIfRemoveOrphanFilesCleansUnnecessaryMetadataFilesInPartitionedTable()
             throws Exception
     {
         String tableName = "test_deleting_orphan_files_unnecessary_files" + randomTableSuffix();
@@ -3362,7 +3404,7 @@ public abstract class BaseIcebergConnectorTest
         Path orphanMetadataFile = Files.createFile(Path.of(getIcebergTableMetadataPath(tableName).toString(), "invalidData." + format));
         List<String> initialMetadataFiles = getAllMetadataFilesFromTableDirectoryForTable(tableName);
 
-        assertQuerySucceeds(sessionWithShortRetentionUnlocked, "ALTER TABLE " + tableName + " EXECUTE DELETE_ORPHAN_FILES (retention_threshold => '0s')");
+        assertQuerySucceeds(sessionWithShortRetentionUnlocked, "ALTER TABLE " + tableName + " EXECUTE REMOVE_ORPHAN_FILES (retention_threshold => '0s')");
 
         List<String> updatedMetadataFiles = getAllMetadataFilesFromTableDirectoryForTable(tableName);
         assertThat(updatedMetadataFiles.size()).isLessThan(initialMetadataFiles.size());
@@ -3399,7 +3441,7 @@ public abstract class BaseIcebergConnectorTest
 
         Session sessionWithShortRetentionUnlocked = prepareCleanUpSession();
         assertQuerySucceeds(sessionWithShortRetentionUnlocked, "ALTER TABLE " + tableName + " EXECUTE EXPIRE_SNAPSHOTS (retention_threshold => '0s')");
-        assertQuerySucceeds(sessionWithShortRetentionUnlocked, "ALTER TABLE " + tableName + " EXECUTE DELETE_ORPHAN_FILES (retention_threshold => '0s')");
+        assertQuerySucceeds(sessionWithShortRetentionUnlocked, "ALTER TABLE " + tableName + " EXECUTE REMOVE_ORPHAN_FILES (retention_threshold => '0s')");
         List<String> updatedFiles = getAllMetadataFilesFromTableDirectory(tempDirPath);
         List<Long> updatedSnapshots = getSnapshotIds(tableName);
         assertThat(updatedFiles.size()).isEqualTo(initialFiles.size() - 1);
@@ -3409,32 +3451,32 @@ public abstract class BaseIcebergConnectorTest
     }
 
     @Test
-    public void testExplainDeleteOrphanFilesOutput()
+    public void testExplainRemoveOrphanFilesOutput()
     {
-        String tableName = "test_delete_orphan_files_output" + randomTableSuffix();
+        String tableName = "test_remove_orphan_files_output" + randomTableSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (key varchar, value integer) WITH (partitioning = ARRAY['key'])");
         assertUpdate("INSERT INTO " + tableName + " VALUES ('one', 1)", 1);
         assertUpdate("INSERT INTO " + tableName + " VALUES ('two', 2)", 1);
 
-        assertExplain("EXPLAIN ALTER TABLE " + tableName + " EXECUTE DELETE_ORPHAN_FILES (retention_threshold => '0s')",
-                "SimpleTableExecute\\[iceberg:schemaTableName:tpch.test_delete_orphan_files.*\\{retentionThreshold=0\\.00s}.*");
+        assertExplain("EXPLAIN ALTER TABLE " + tableName + " EXECUTE REMOVE_ORPHAN_FILES (retention_threshold => '0s')",
+                "SimpleTableExecute\\[iceberg:schemaTableName:tpch.test_remove_orphan_files.*\\{retentionThreshold=0\\.00s}.*");
     }
 
     @Test
-    public void testDeleteOrphanFilesParameterValidation()
+    public void testRemoveOrphanFilesParameterValidation()
     {
         assertQueryFails(
-                "ALTER TABLE no_such_table_exists EXECUTE DELETE_ORPHAN_FILES",
+                "ALTER TABLE no_such_table_exists EXECUTE REMOVE_ORPHAN_FILES",
                 "\\Qline 1:1: Table 'iceberg.tpch.no_such_table_exists' does not exist");
         assertQueryFails(
-                "ALTER TABLE nation EXECUTE DELETE_ORPHAN_FILES (retention_threshold => '33')",
-                "\\QUnable to set catalog 'iceberg' table procedure 'DELETE_ORPHAN_FILES' property 'retention_threshold' to ['33']: duration is not a valid data duration string: 33");
+                "ALTER TABLE nation EXECUTE REMOVE_ORPHAN_FILES (retention_threshold => '33')",
+                "\\QUnable to set catalog 'iceberg' table procedure 'REMOVE_ORPHAN_FILES' property 'retention_threshold' to ['33']: duration is not a valid data duration string: 33");
         assertQueryFails(
-                "ALTER TABLE nation EXECUTE DELETE_ORPHAN_FILES (retention_threshold => '33mb')",
-                "\\QUnable to set catalog 'iceberg' table procedure 'DELETE_ORPHAN_FILES' property 'retention_threshold' to ['33mb']: Unknown time unit: mb");
+                "ALTER TABLE nation EXECUTE REMOVE_ORPHAN_FILES (retention_threshold => '33mb')",
+                "\\QUnable to set catalog 'iceberg' table procedure 'REMOVE_ORPHAN_FILES' property 'retention_threshold' to ['33mb']: Unknown time unit: mb");
         assertQueryFails(
-                "ALTER TABLE nation EXECUTE DELETE_ORPHAN_FILES (retention_threshold => '33s')",
-                "\\QRetention specified (33.00s) is shorter than the minimum retention configured in the system (7.00d). Minimum retention can be changed with iceberg.delete_orphan_files.min-retention configuration property or iceberg.delete_orphan_files_min_retention session property");
+                "ALTER TABLE nation EXECUTE REMOVE_ORPHAN_FILES (retention_threshold => '33s')",
+                "\\QRetention specified (33.00s) is shorter than the minimum retention configured in the system (7.00d). Minimum retention can be changed with iceberg.remove_orphan_files.min-retention configuration property or iceberg.remove_orphan_files_min_retention session property");
     }
 
     @Test
@@ -3486,7 +3528,7 @@ public abstract class BaseIcebergConnectorTest
     {
         return Session.builder(getSession())
                 .setCatalogSessionProperty("iceberg", "expire_snapshots_min_retention", "0s")
-                .setCatalogSessionProperty("iceberg", "delete_orphan_files_min_retention", "0s")
+                .setCatalogSessionProperty("iceberg", "remove_orphan_files_min_retention", "0s")
                 .build();
     }
 
@@ -3522,6 +3564,11 @@ public abstract class BaseIcebergConnectorTest
                 .getOnlyColumn()
                 .map(Long.class::cast)
                 .collect(toUnmodifiableList());
+    }
+
+    private long getCurrentSnapshotId(String tableName)
+    {
+        return (long) computeScalar("SELECT snapshot_id FROM \"" + tableName + "$snapshots\" ORDER BY committed_at DESC LIMIT 1");
     }
 
     private Path getIcebergTableDataPath(String tableName)
